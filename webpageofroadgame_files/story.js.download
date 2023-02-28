@@ -1,0 +1,762 @@
+// Created with Squiffy 5.1.3
+// https://github.com/textadventures/squiffy
+
+(function(){
+/* jshint quotmark: single */
+/* jshint evil: true */
+
+var squiffy = {};
+
+(function () {
+    'use strict';
+
+    squiffy.story = {};
+
+    var initLinkHandler = function () {
+        var handleLink = function (link) {
+            if (link.hasClass('disabled')) return;
+            var passage = link.data('passage');
+            var section = link.data('section');
+            var rotateAttr = link.attr('data-rotate');
+            var sequenceAttr = link.attr('data-sequence');
+            if (passage) {
+                disableLink(link);
+                squiffy.set('_turncount', squiffy.get('_turncount') + 1);
+                passage = processLink(passage);
+                if (passage) {
+                    currentSection.append('<hr/>');
+                    squiffy.story.passage(passage);
+                }
+                var turnPassage = '@' + squiffy.get('_turncount');
+                if (turnPassage in squiffy.story.section.passages) {
+                    squiffy.story.passage(turnPassage);
+                }
+                if ('@last' in squiffy.story.section.passages && squiffy.get('_turncount')>= squiffy.story.section.passageCount) {
+                    squiffy.story.passage('@last');
+                }
+            }
+            else if (section) {
+                currentSection.append('<hr/>');
+                disableLink(link);
+                section = processLink(section);
+                squiffy.story.go(section);
+            }
+            else if (rotateAttr || sequenceAttr) {
+                var result = rotate(rotateAttr || sequenceAttr, rotateAttr ? link.text() : '');
+                link.html(result[0].replace(/&quot;/g, '"').replace(/&#39;/g, '\''));
+                var dataAttribute = rotateAttr ? 'data-rotate' : 'data-sequence';
+                link.attr(dataAttribute, result[1]);
+                if (!result[1]) {
+                    disableLink(link);
+                }
+                if (link.attr('data-attribute')) {
+                    squiffy.set(link.attr('data-attribute'), result[0]);
+                }
+                squiffy.story.save();
+            }
+        };
+
+        squiffy.ui.output.on('click', 'a.squiffy-link', function () {
+            handleLink(jQuery(this));
+        });
+
+        squiffy.ui.output.on('keypress', 'a.squiffy-link', function (e) {
+            if (e.which !== 13) return;
+            handleLink(jQuery(this));
+        });
+
+        squiffy.ui.output.on('mousedown', 'a.squiffy-link', function (event) {
+            event.preventDefault();
+        });
+    };
+
+    var disableLink = function (link) {
+        link.addClass('disabled');
+        link.attr('tabindex', -1);
+    }
+    
+    squiffy.story.begin = function () {
+        if (!squiffy.story.load()) {
+            squiffy.story.go(squiffy.story.start);
+        }
+    };
+
+    var processLink = function(link) {
+		link = String(link);
+        var sections = link.split(',');
+        var first = true;
+        var target = null;
+        sections.forEach(function (section) {
+            section = section.trim();
+            if (startsWith(section, '@replace ')) {
+                replaceLabel(section.substring(9));
+            }
+            else {
+                if (first) {
+                    target = section;
+                }
+                else {
+                    setAttribute(section);
+                }
+            }
+            first = false;
+        });
+        return target;
+    };
+
+    var setAttribute = function(expr) {
+        var lhs, rhs, op, value;
+        var setRegex = /^([\w]*)\s*=\s*(.*)$/;
+        var setMatch = setRegex.exec(expr);
+        if (setMatch) {
+            lhs = setMatch[1];
+            rhs = setMatch[2];
+            if (isNaN(rhs)) {
+				if(startsWith(rhs,"@")) rhs=squiffy.get(rhs.substring(1));
+                squiffy.set(lhs, rhs);
+            }
+            else {
+                squiffy.set(lhs, parseFloat(rhs));
+            }
+        }
+        else {
+			var incDecRegex = /^([\w]*)\s*([\+\-\*\/])=\s*(.*)$/;
+            var incDecMatch = incDecRegex.exec(expr);
+            if (incDecMatch) {
+                lhs = incDecMatch[1];
+                op = incDecMatch[2];
+				rhs = incDecMatch[3];
+				if(startsWith(rhs,"@")) rhs=squiffy.get(rhs.substring(1));
+				rhs = parseFloat(rhs);
+                value = squiffy.get(lhs);
+                if (value === null) value = 0;
+                if (op == '+') {
+                    value += rhs;
+                }
+                if (op == '-') {
+                    value -= rhs;
+                }
+				if (op == '*') {
+					value *= rhs;
+				}
+				if (op == '/') {
+					value /= rhs;
+				}
+                squiffy.set(lhs, value);
+            }
+            else {
+                value = true;
+                if (startsWith(expr, 'not ')) {
+                    expr = expr.substring(4);
+                    value = false;
+                }
+                squiffy.set(expr, value);
+            }
+        }
+    };
+
+    var replaceLabel = function(expr) {
+        var regex = /^([\w]*)\s*=\s*(.*)$/;
+        var match = regex.exec(expr);
+        if (!match) return;
+        var label = match[1];
+        var text = match[2];
+        if (text in squiffy.story.section.passages) {
+            text = squiffy.story.section.passages[text].text;
+        }
+        else if (text in squiffy.story.sections) {
+            text = squiffy.story.sections[text].text;
+        }
+        var stripParags = /^<p>(.*)<\/p>$/;
+        var stripParagsMatch = stripParags.exec(text);
+        if (stripParagsMatch) {
+            text = stripParagsMatch[1];
+        }
+        var $labels = squiffy.ui.output.find('.squiffy-label-' + label);
+        $labels.fadeOut(1000, function() {
+            $labels.html(squiffy.ui.processText(text));
+            $labels.fadeIn(1000, function() {
+                squiffy.story.save();
+            });
+        });
+    };
+
+    squiffy.story.go = function(section) {
+        squiffy.set('_transition', null);
+        newSection();
+        squiffy.story.section = squiffy.story.sections[section];
+        if (!squiffy.story.section) return;
+        squiffy.set('_section', section);
+        setSeen(section);
+        var master = squiffy.story.sections[''];
+        if (master) {
+            squiffy.story.run(master);
+            squiffy.ui.write(master.text);
+        }
+        squiffy.story.run(squiffy.story.section);
+        // The JS might have changed which section we're in
+        if (squiffy.get('_section') == section) {
+            squiffy.set('_turncount', 0);
+            squiffy.ui.write(squiffy.story.section.text);
+            squiffy.story.save();
+        }
+    };
+
+    squiffy.story.run = function(section) {
+        if (section.clear) {
+            squiffy.ui.clearScreen();
+        }
+        if (section.attributes) {
+            processAttributes(section.attributes);
+        }
+        if (section.js) {
+            section.js();
+        }
+    };
+
+    squiffy.story.passage = function(passageName) {
+        var passage = squiffy.story.section.passages[passageName];
+        if (!passage) return;
+        setSeen(passageName);
+        var masterSection = squiffy.story.sections[''];
+        if (masterSection) {
+            var masterPassage = masterSection.passages[''];
+            if (masterPassage) {
+                squiffy.story.run(masterPassage);
+                squiffy.ui.write(masterPassage.text);
+            }
+        }
+        var master = squiffy.story.section.passages[''];
+        if (master) {
+            squiffy.story.run(master);
+            squiffy.ui.write(master.text);
+        }
+        squiffy.story.run(passage);
+        squiffy.ui.write(passage.text);
+        squiffy.story.save();
+    };
+
+    var processAttributes = function(attributes) {
+        attributes.forEach(function (attribute) {
+            if (startsWith(attribute, '@replace ')) {
+                replaceLabel(attribute.substring(9));
+            }
+            else {
+                setAttribute(attribute);
+            }
+        });
+    };
+
+    squiffy.story.restart = function() {
+        if (squiffy.ui.settings.persist && window.localStorage) {
+            var keys = Object.keys(localStorage);
+            jQuery.each(keys, function (idx, key) {
+                if (startsWith(key, squiffy.story.id)) {
+                    localStorage.removeItem(key);
+                }
+            });
+        }
+        else {
+            squiffy.storageFallback = {};
+        }
+        if (squiffy.ui.settings.scroll === 'element') {
+            squiffy.ui.output.html('');
+            squiffy.story.begin();
+        }
+        else {
+            location.reload();
+        }
+    };
+
+    squiffy.story.save = function() {
+        squiffy.set('_output', squiffy.ui.output.html());
+    };
+
+    squiffy.story.load = function() {
+        var output = squiffy.get('_output');
+        if (!output) return false;
+        squiffy.ui.output.html(output);
+        currentSection = jQuery('#' + squiffy.get('_output-section'));
+        squiffy.story.section = squiffy.story.sections[squiffy.get('_section')];
+        var transition = squiffy.get('_transition');
+        if (transition) {
+            eval('(' + transition + ')()');
+        }
+        return true;
+    };
+
+    var setSeen = function(sectionName) {
+        var seenSections = squiffy.get('_seen_sections');
+        if (!seenSections) seenSections = [];
+        if (seenSections.indexOf(sectionName) == -1) {
+            seenSections.push(sectionName);
+            squiffy.set('_seen_sections', seenSections);
+        }
+    };
+
+    squiffy.story.seen = function(sectionName) {
+        var seenSections = squiffy.get('_seen_sections');
+        if (!seenSections) return false;
+        return (seenSections.indexOf(sectionName) > -1);
+    };
+    
+    squiffy.ui = {};
+
+    var currentSection = null;
+    var screenIsClear = true;
+    var scrollPosition = 0;
+
+    var newSection = function() {
+        if (currentSection) {
+            disableLink(jQuery('.squiffy-link', currentSection));
+        }
+        var sectionCount = squiffy.get('_section-count') + 1;
+        squiffy.set('_section-count', sectionCount);
+        var id = 'squiffy-section-' + sectionCount;
+        currentSection = jQuery('<div/>', {
+            id: id,
+        }).appendTo(squiffy.ui.output);
+        squiffy.set('_output-section', id);
+    };
+
+    squiffy.ui.write = function(text) {
+        screenIsClear = false;
+        scrollPosition = squiffy.ui.output.height();
+        currentSection.append(jQuery('<div/>').html(squiffy.ui.processText(text)));
+        squiffy.ui.scrollToEnd();
+    };
+
+    squiffy.ui.clearScreen = function() {
+        squiffy.ui.output.html('');
+        screenIsClear = true;
+        newSection();
+    };
+
+    squiffy.ui.scrollToEnd = function() {
+        var scrollTo, currentScrollTop, distance, duration;
+        if (squiffy.ui.settings.scroll === 'element') {
+            scrollTo = squiffy.ui.output[0].scrollHeight - squiffy.ui.output.height();
+            currentScrollTop = squiffy.ui.output.scrollTop();
+            if (scrollTo > currentScrollTop) {
+                distance = scrollTo - currentScrollTop;
+                duration = distance / 0.4;
+                squiffy.ui.output.stop().animate({ scrollTop: scrollTo }, duration);
+            }
+        }
+        else {
+            scrollTo = scrollPosition;
+            currentScrollTop = Math.max(jQuery('body').scrollTop(), jQuery('html').scrollTop());
+            if (scrollTo > currentScrollTop) {
+                var maxScrollTop = jQuery(document).height() - jQuery(window).height();
+                if (scrollTo > maxScrollTop) scrollTo = maxScrollTop;
+                distance = scrollTo - currentScrollTop;
+                duration = distance / 0.5;
+                jQuery('body,html').stop().animate({ scrollTop: scrollTo }, duration);
+            }
+        }
+    };
+
+    squiffy.ui.processText = function(text) {
+        function process(text, data) {
+            var containsUnprocessedSection = false;
+            var open = text.indexOf('{');
+            var close;
+            
+            if (open > -1) {
+                var nestCount = 1;
+                var searchStart = open + 1;
+                var finished = false;
+             
+                while (!finished) {
+                    var nextOpen = text.indexOf('{', searchStart);
+                    var nextClose = text.indexOf('}', searchStart);
+         
+                    if (nextClose > -1) {
+                        if (nextOpen > -1 && nextOpen < nextClose) {
+                            nestCount++;
+                            searchStart = nextOpen + 1;
+                        }
+                        else {
+                            nestCount--;
+                            searchStart = nextClose + 1;
+                            if (nestCount === 0) {
+                                close = nextClose;
+                                containsUnprocessedSection = true;
+                                finished = true;
+                            }
+                        }
+                    }
+                    else {
+                        finished = true;
+                    }
+                }
+            }
+            
+            if (containsUnprocessedSection) {
+                var section = text.substring(open + 1, close);
+                var value = processTextCommand(section, data);
+                text = text.substring(0, open) + value + process(text.substring(close + 1), data);
+            }
+            
+            return (text);
+        }
+
+        function processTextCommand(text, data) {
+            if (startsWith(text, 'if ')) {
+                return processTextCommand_If(text, data);
+            }
+            else if (startsWith(text, 'else:')) {
+                return processTextCommand_Else(text, data);
+            }
+            else if (startsWith(text, 'label:')) {
+                return processTextCommand_Label(text, data);
+            }
+            else if (/^rotate[: ]/.test(text)) {
+                return processTextCommand_Rotate('rotate', text, data);
+            }
+            else if (/^sequence[: ]/.test(text)) {
+                return processTextCommand_Rotate('sequence', text, data);   
+            }
+            else if (text in squiffy.story.section.passages) {
+                return process(squiffy.story.section.passages[text].text, data);
+            }
+            else if (text in squiffy.story.sections) {
+                return process(squiffy.story.sections[text].text, data);
+            }
+			else if (startsWith(text,'@') && !startsWith(text,'@replace')) {
+				processAttributes(text.substring(1).split(","));
+				return "";
+			}
+            return squiffy.get(text);
+        }
+
+        function processTextCommand_If(section, data) {
+            var command = section.substring(3);
+            var colon = command.indexOf(':');
+            if (colon == -1) {
+                return ('{if ' + command + '}');
+            }
+
+            var text = command.substring(colon + 1);
+            var condition = command.substring(0, colon);
+			condition = condition.replace("<", "&lt;");
+            var operatorRegex = /([\w ]*)(=|&lt;=|&gt;=|&lt;&gt;|&lt;|&gt;)(.*)/;
+            var match = operatorRegex.exec(condition);
+
+            var result = false;
+
+            if (match) {
+                var lhs = squiffy.get(match[1]);
+                var op = match[2];
+                var rhs = match[3];
+
+				if(startsWith(rhs,'@')) rhs=squiffy.get(rhs.substring(1));
+				
+                if (op == '=' && lhs == rhs) result = true;
+                if (op == '&lt;&gt;' && lhs != rhs) result = true;
+                if (op == '&gt;' && lhs > rhs) result = true;
+                if (op == '&lt;' && lhs < rhs) result = true;
+                if (op == '&gt;=' && lhs >= rhs) result = true;
+                if (op == '&lt;=' && lhs <= rhs) result = true;
+            }
+            else {
+                var checkValue = true;
+                if (startsWith(condition, 'not ')) {
+                    condition = condition.substring(4);
+                    checkValue = false;
+                }
+
+                if (startsWith(condition, 'seen ')) {
+                    result = (squiffy.story.seen(condition.substring(5)) == checkValue);
+                }
+                else {
+                    var value = squiffy.get(condition);
+                    if (value === null) value = false;
+                    result = (value == checkValue);
+                }
+            }
+
+            var textResult = result ? process(text, data) : '';
+
+            data.lastIf = result;
+            return textResult;
+        }
+
+        function processTextCommand_Else(section, data) {
+            if (!('lastIf' in data) || data.lastIf) return '';
+            var text = section.substring(5);
+            return process(text, data);
+        }
+
+        function processTextCommand_Label(section, data) {
+            var command = section.substring(6);
+            var eq = command.indexOf('=');
+            if (eq == -1) {
+                return ('{label:' + command + '}');
+            }
+
+            var text = command.substring(eq + 1);
+            var label = command.substring(0, eq);
+
+            return '<span class="squiffy-label-' + label + '">' + process(text, data) + '</span>';
+        }
+
+        function processTextCommand_Rotate(type, section, data) {
+            var options;
+            var attribute = '';
+            if (section.substring(type.length, type.length + 1) == ' ') {
+                var colon = section.indexOf(':');
+                if (colon == -1) {
+                    return '{' + section + '}';
+                }
+                options = section.substring(colon + 1);
+                attribute = section.substring(type.length + 1, colon);
+            }
+            else {
+                options = section.substring(type.length + 1);
+            }
+            var rotation = rotate(options.replace(/"/g, '&quot;').replace(/'/g, '&#39;'));
+            if (attribute) {
+                squiffy.set(attribute, rotation[0]);
+            }
+            return '<a class="squiffy-link" data-' + type + '="' + rotation[1] + '" data-attribute="' + attribute + '" role="link">' + rotation[0] + '</a>';
+        }
+
+        var data = {
+            fulltext: text
+        };
+        return process(text, data);
+    };
+
+    squiffy.ui.transition = function(f) {
+        squiffy.set('_transition', f.toString());
+        f();
+    };
+
+    squiffy.storageFallback = {};
+
+    squiffy.set = function(attribute, value) {
+        if (typeof value === 'undefined') value = true;
+        if (squiffy.ui.settings.persist && window.localStorage) {
+            localStorage[squiffy.story.id + '-' + attribute] = JSON.stringify(value);
+        }
+        else {
+            squiffy.storageFallback[attribute] = JSON.stringify(value);
+        }
+        squiffy.ui.settings.onSet(attribute, value);
+    };
+
+    squiffy.get = function(attribute) {
+        var result;
+        if (squiffy.ui.settings.persist && window.localStorage) {
+            result = localStorage[squiffy.story.id + '-' + attribute];
+        }
+        else {
+            result = squiffy.storageFallback[attribute];
+        }
+        if (!result) return null;
+        return JSON.parse(result);
+    };
+
+    var startsWith = function(string, prefix) {
+        return string.substring(0, prefix.length) === prefix;
+    };
+
+    var rotate = function(options, current) {
+        var colon = options.indexOf(':');
+        if (colon == -1) {
+            return [options, current];
+        }
+        var next = options.substring(0, colon);
+        var remaining = options.substring(colon + 1);
+        if (current) remaining += ':' + current;
+        return [next, remaining];
+    };
+
+    var methods = {
+        init: function (options) {
+            var settings = jQuery.extend({
+                scroll: 'body',
+                persist: true,
+                restartPrompt: true,
+                onSet: function (attribute, value) {}
+            }, options);
+
+            squiffy.ui.output = this;
+            squiffy.ui.restart = jQuery(settings.restart);
+            squiffy.ui.settings = settings;
+
+            if (settings.scroll === 'element') {
+                squiffy.ui.output.css('overflow-y', 'auto');
+            }
+
+            initLinkHandler();
+            squiffy.story.begin();
+            
+            return this;
+        },
+        get: function (attribute) {
+            return squiffy.get(attribute);
+        },
+        set: function (attribute, value) {
+            squiffy.set(attribute, value);
+        },
+        restart: function () {
+            if (!squiffy.ui.settings.restartPrompt || confirm('Are you sure you want to restart?')) {
+                squiffy.story.restart();
+            }
+        }
+    };
+
+    jQuery.fn.squiffy = function (methodOrOptions) {
+        if (methods[methodOrOptions]) {
+            return methods[methodOrOptions]
+                .apply(this, Array.prototype.slice.call(arguments, 1));
+        }
+        else if (typeof methodOrOptions === 'object' || ! methodOrOptions) {
+            return methods.init.apply(this, arguments);
+        } else {
+            jQuery.error('Method ' +  methodOrOptions + ' does not exist');
+        }
+    };
+})();
+
+var get = squiffy.get;
+var set = squiffy.set;
+
+
+squiffy.story.start = '_default';
+squiffy.story.id = '8a8a1f1b00';
+squiffy.story.sections = {
+	'_default': {
+		'text': "<h3 id=\"the-the-road-game\">The &quot;The Road&quot; Game</h3>\n<h4 id=\"by-jack-twining-and-mateo-alvarado\">By Jack Twining and Mateo Alvarado</h4>\n<p><img src=\"https://live.staticflickr.com/65535/52709277119_f7a3fa06da_b.jpg\" alt=\"description of the image\" width=\"600\" height=\"600\"></p>\n<hr>\n<p><strong><a class=\"squiffy-link link-section\" data-section=\"Begin?\" role=\"link\" tabindex=\"0\">Begin?</a></strong></p>",
+		'passages': {
+		},
+	},
+	'Begin?': {
+		'text': "<p><strong>Day number:</strong> 1</p>\n<p><strong>Time of day:</strong> Morning</p>\n<p><strong>Health:</strong> 60%</p>\n<p><strong>Location:</strong> Abandoned gas station</p>\n<p><strong>XP:</strong> 0</p>\n<p><strong>Quest:</strong> None</p>\n<p><strong>Abilities:</strong> None</p>\n<details>\n\n  <summary><strong>Health:</strong> 60% </summary>\n<em>If your health is under 75% you are unable to run. You may only hide.</em>\n\n</details>\n\n\n<details>\n\n  <summary><strong>Weather:</strong> Overcast</summary>\n\n<em>Overcast generally means &quot;covered or overspread with clouds,&quot; however, in this world it&#39;s never <strong>not</strong> cloudy with ash or soot or smoke... so there&#39;s not really anything &quot;over&quot; about it.</em>\n\n</details>\n\n<details>\n\n  <summary><strong>Inventory:</strong> Empty (0/3 items) </summary>\n<em>Your inventory is empty. You have nothing. I don&#39;t know why you bothered looking.</em>\n\n</details>\n\n<p><a class=\"squiffy-link link-section\" data-section=\"Continue?\" role=\"link\" tabindex=\"0\">Continue?</a></p>",
+		'passages': {
+		},
+	},
+	'Continue?': {
+		'text': "<p>You wake up in an abandoned gas station, your memory hazy. You have a vague recollection of a disaster that occurred, but nothing more. You feel a sense of unease in your gut, like something terrible has happened.</p>\n<p>You realize that you&#39;re hungry and thirsty, and that you&#39;ll need to find food and water to survive. You should probably take a <strong><a class=\"squiffy-link link-section\" data-section=\"look around\" role=\"link\" tabindex=\"0\">look around</a>.</strong></p>",
+		'passages': {
+		},
+	},
+	'look around': {
+		'text': "<p>You see empty shelves and discarded wrappers and cans. The gas pumps outside appear rusted and unusable. You should <strong><a class=\"squiffy-link link-section\" data-section=\"search for some supplies\" role=\"link\" tabindex=\"0\">search for some supplies</a>.</strong></p>",
+		'passages': {
+		},
+	},
+	'search for some supplies': {
+		'text': "<p>You rummage through the debris and find a few bottles of water, some stale crackers, and a pipe flute! It&#39;s not much, though it will have to do for now.</p>\n<p><em>You probably shouldn&#39;t stay here any longer.</em> I would <strong><a class=\"squiffy-link link-section\" data-section=\"leave\" role=\"link\" tabindex=\"0\">leave</a></strong>.</p>",
+		'passages': {
+		},
+	},
+	'leave': {
+		'text': "<p>You step out into the gray morning light, feeling exposed and vulnerable. You see a road heading out in the direction you believe to be west. There&#39;s a child standing on the median strip. <em><a class=\"squiffy-link link-section\" data-section=\"What are they doing here?\" role=\"link\" tabindex=\"0\">What are they doing here?</a></em></p>",
+		'passages': {
+		},
+	},
+	'What are they doing here?': {
+		'text': "<p><em>Do you want to say hello?</em></p>\n<p><strong><a class=\"squiffy-link link-section\" data-section=\"Yes\" role=\"link\" tabindex=\"0\">Yes</a></strong> or <strong><a class=\"squiffy-link link-section\" data-section=\"no\" role=\"link\" tabindex=\"0\">no</a></strong>?</p>",
+		'passages': {
+		},
+	},
+	'Yes': {
+		'text': "<p>I probably should. He seems lonely.</p>\n<p>You walk up to the child. He&#39;s wearing a tarp, and shoes wrapped in duct tape.</p>\n<p>&quot;<a class=\"squiffy-link link-section\" data-section=\"Are you alone?\" role=\"link\" tabindex=\"0\">Are you alone?</a>&quot;</p>",
+		'passages': {
+		},
+	},
+	'Are you alone?': {
+		'text': "<p>The child stares silently. You look around a bit, searching for anyone who might accompany them. You suspect it might be a trap, though the child does seem to be very much alone.</p>\n<p><em>Will you <strong><a class=\"squiffy-link link-section\" data-section=\"repeat the question\" role=\"link\" tabindex=\"0\">repeat the question</a></strong>? Or <strong><a class=\"squiffy-link link-section\" data-section=\"just leave\" role=\"link\" tabindex=\"0\">just leave</a></strong>?</em></p>",
+		'passages': {
+		},
+	},
+	'wait': {
+		'text': "<p>The boy clears his throat and tries to talk, though his voice is incredibly hoarse. He nods his head to make sure you know he is in fact alone.</p>",
+		'passages': {
+		},
+	},
+	'move on': {
+		'text': "<p>You tredge onwards down the road, hoping the child doesn&#39;t try to follow.</p>",
+		'passages': {
+		},
+	},
+	'no': {
+		'text': "<p>I&#39;m not really one for children, I&#39;m sure the child will find their way.</p>\n<p>You quietly retreat back inside the store, hoping the child doesn&#39;t notice. A bell rings as you open the door. The child looks at you. You make a run for the back door. It&#39;s locked. You look back. The child is standing by the gas pump, staring. They start to back away. </p>\n<p><em>Are you sure you don&#39;t want to approach the child?</em></p>\n<ol>\n<li><p><a class=\"squiffy-link link-section\" data-section=\"Ehh maybe I should\" role=\"link\" tabindex=\"0\">Ehh maybe I should</a>.</p>\n</li>\n<li><p><a class=\"squiffy-link link-section\" data-section=\"Hmm... maybe I should see if they have anything worth stealing\" role=\"link\" tabindex=\"0\">Hmm... maybe I should see if they have anything worth stealing</a>.</p>\n</li>\n<li><p><a class=\"squiffy-link link-section\" data-section=\"Yeah... I'm sure. The child is probably more trouble than its worth\" role=\"link\" tabindex=\"0\">Yeah... I&#39;m sure. The child is probably more trouble than its worth</a>.</p>\n</li>\n</ol>",
+		'passages': {
+		},
+	},
+	'Hmm... maybe I should see if they have anything worth stealing': {
+		'text': "<p>You approach the child, looking them up and down. Hmm. The child doesn&#39;t seem to have much. He&#39;s wearing a tarp, and shoes wrapped in duct tape. The tarp might be useful, if the child wasn&#39;t wearing it.</p>\n<p><a class=\"squiffy-link link-section\" data-section=\"Are you alone?\" role=\"link\" tabindex=\"0\">Are you alone?</a></p>\n<p><a class=\"squiffy-link link-section\" data-section=\"just leave\" role=\"link\" tabindex=\"0\">just leave</a>\n@@@</p>",
+		'passages': {
+		},
+	},
+	'Ehh maybe I should': {
+		'text': "<p>You walk to the front door. The child freezes. You open the door.</p>\n<ol>\n<li><p>&quot;<a class=\"squiffy-link link-section\" data-section=\"Are you alone?\" role=\"link\" tabindex=\"0\">Are you alone?</a>&quot;</p>\n</li>\n<li><p><a class=\"squiffy-link link-section\" data-section=\"You approach the child and wait for them to speak.\" role=\"link\" tabindex=\"0\">You approach the child and wait for them to speak.</a></p>\n</li>\n</ol>",
+		'passages': {
+		},
+	},
+	'You approach the child and wait for them to speak.': {
+		'text': "<p>The child stays silent.</p>\n<p> <a class=\"squiffy-link link-section\" data-section=\"Are you alone?\" role=\"link\" tabindex=\"0\">Are you alone?</a></p>",
+		'passages': {
+		},
+	},
+	'repeat the question': {
+		'text': "<p>&quot;Are you alone??&quot;</p>\n<p>The child clears their throat and tries to talk, though their voice is incredibly hoarse. The child nods their head to make sure you know that they are in fact alone.</p>\n<p>You hand the child one of the bottles of water you found in the gas station store. The child takes it and unscrews the cap, shaking uncontrollably as they do so.</p>\n<p>The child hands the bottle back to you. It&#39;s empty.\n&quot;<a class=\"squiffy-link link-section\" data-section=\"What's your name\" role=\"link\" tabindex=\"0\">What&#39;s your name</a>?&quot;</p>\n<p>&quot;<a class=\"squiffy-link link-section\" data-section=\"Let's go\" role=\"link\" tabindex=\"0\">Let&#39;s go</a>.&quot;</p>",
+		'passages': {
+		},
+	},
+	'What\'s your name': {
+		'text': "<p>Francis, the child says. He asks for your name in return.\n<a class=\"squiffy-link link-section\" data-section=\"Yahweh\" role=\"link\" tabindex=\"0\">Yahweh</a></p>\n<p><a class=\"squiffy-link link-section\" data-section=\"Kenny\" role=\"link\" tabindex=\"0\">Kenny</a></p>\n<p><a class=\"squiffy-link link-section\" data-section=\"Frankie\" role=\"link\" tabindex=\"0\">Frankie</a>\n@</p>",
+		'passages': {
+		},
+	},
+	'just leave': {
+		'text': "<p>You hand the boy your pipe flute and start walking down the road, in the direction you believe to be west, with your water bottle and stale crackers in hand. </p>\n<p>With the road hidden in the veil of the night, you decide you should stop and rest.</p>\n<p><em>Do you want to <strong><a class=\"squiffy-link link-section\" data-section=\"stay close to the road\" role=\"link\" tabindex=\"0\">stay close to the road</a></strong> or <strong><a class=\"squiffy-link link-section\" data-section=\"wander into the woods\" role=\"link\" tabindex=\"0\">wander into the woods</a></strong>, where you&#39;ll be less visible?</em></p>",
+		'passages': {
+		},
+	},
+	'stay close to the road': {
+		'text': "<p>You decide to stay on the road. You stop to rest, sitting down in the dirt and ash beside the road. A loud, disturbing sound suddenly breaches the air. It&#39;s the distant sounds of the most awful pipe flute playing you&#39;ve ever heard.</p>\n<p>You bury your face in your hands. The child has followed you, and you could not regret leaving him with the flute more.\n@</p>",
+		'passages': {
+		},
+	},
+	'wander into the woods': {
+		'text': "<p>You walk away from the road, stumbling through what seems to have been a forest. The skeletons of trees creak and sway in breeze. You suddenly run into something hard sticking out of the ground and trip.</p>\n<p>You feel around on the ground. It seems like it was a log you tripped on, and you feel soft spores portruding from it. You don&#39;t know anything about mushrooms, though you&#39;re feeling pretty hungry.</p>\n<ol>\n<li><p><a class=\"squiffy-link link-section\" data-section=\"Stop for a snack!\" role=\"link\" tabindex=\"0\">Stop for a snack!</a> </p>\n</li>\n<li><p><a class=\"squiffy-link link-section\" data-section=\"I think I'd rather risk starving\" role=\"link\" tabindex=\"0\">I think I&#39;d rather risk starving</a>.</p>\n</li>\n</ol>",
+		'passages': {
+		},
+	},
+	'Stop for a snack!': {
+		'text': "<p>You begin shoveling mushrooms in your mouth. What remains after your aggressive shoveling you carry along with you. Your hands are full. You wish you had the boy&#39;s tarp to help you carry it all.</p>\n<p><a class=\"squiffy-link link-section\" data-section=\"Continue onwards\" role=\"link\" tabindex=\"0\">Continue onwards</a></p>",
+		'passages': {
+		},
+	},
+	'Continue onwards': {
+		'text': "<p>You continue stumbling through the woods. You begin to see a bright light in the distance, seemingly floating through the sky above. As it flies closer to you, you hear the sound of bells. The thing flies down to you.</p>\n<p>It&#39;s Santa!! He jumps down off his sleigh. Rudolph&#39;s bright nose illuminates the forest, revealing Santa&#39;s peculiar outfit. He is wearing cowboy boots, a Philadelphia Eagles jersey, and a purple feathery boa.\n<a class=\"squiffy-link link-section\" data-section=\"Hi Santa\" role=\"link\" tabindex=\"0\">Hi Santa</a>!</p>",
+		'passages': {
+		},
+	},
+	'Hi Santa': {
+		'text': "<p>He says his name is Jason, which fills you with disgust. Though he gives you his purple boa, so that&#39;s pretty cool!! He gently wraps it around your neck. It&#39;s nice and warm, and VERY feathery.</p>\n<p>@</p>",
+		'passages': {
+		},
+	},
+	'I think I\'d rather risk starving': {
+		'text': "<p>You try to continue on, but your legs hurt and your hands sting from your fall. You sit down, leaning against the trunk of a tree, or what&#39;s left of it anyways. It&#39;s cold, but you decide to try and sleep anyway. You eventually drift off.</p>\n<p><a class=\"squiffy-link link-section\" data-section=\"Begin Day 2\" role=\"link\" tabindex=\"0\">Begin Day 2</a></p>",
+		'passages': {
+		},
+	},
+	'Begin Day 2': {
+		'text': "<p><strong>Day number:</strong> 2</p>\n<p><strong>Time of day:</strong> Morning</p>\n<p><strong>Health:</strong> 60%</p>\n<p><strong>Location:</strong> Abandoned gas station</p>\n<p><strong>XP:</strong> 0</p>\n<p><strong>Quest:</strong> None</p>\n<p><strong>Abilities:</strong> None</p>\n<details>\n\n  <summary><strong>Health:</strong> 60% </summary>\n<em>If your health is under 75% you are unable to run. You may only hide.</em>\n\n</details>\n\n\n<details>\n\n  <summary><strong>Weather:</strong> Overcast</summary>\n\n<em>Overcast generally means &quot;covered or overspread with clouds,&quot; however, in this world it&#39;s never <strong>not</strong> cloudy with ash or soot or smoke... so there&#39;s not really anything &quot;over&quot; about it.</em>\n\n</details>\n\n<details>\n\n<p>  <summary><strong>Inventory:</strong> Full (3/3 items) </summary>\n<em>You have a couple of water bottles and stale crackers</em></p>\n<p></details>\n@ (day 2)</p>",
+		'passages': {
+		},
+	},
+	'Yeah... I\'m sure. The child is probably more trouble than its worth': {
+		'text': "<p><em>It&#39;s probably for the best, you wouldn&#39;t want to have to share your stale crackers and water anyway.</em>\n@</p>\n<p>You stand in the aisle, staring at the child, waiting for them to go away. You clutch the pipe flute in your hand. The child still stands there, unafraid of your flute, staring deep into your soul.</p>",
+		'passages': {
+		},
+	},
+}
+})();
